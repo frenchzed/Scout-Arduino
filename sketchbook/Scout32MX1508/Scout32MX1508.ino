@@ -1,11 +1,30 @@
- /*
+   /*
 Pilot Hobbies Scout32 - For ESP32
-Version 2.2 - Should compile with ESP32 Boards Library 1.0.6+
+Version 2.3 - Should compile with ESP32 Boards Library 1.0.6+
+
+I recommend this new motor driver variation over the older ESC / Modified Servo code.
+The motor driver approach is cheaper and less prone to drift and calibration errors.
+Version 2.2 is still included for use with Servos and ESCs.
+
 MX1508 Changes to Pinout:
-GPIO12 - IN1 - Left FWD
+GPIO12 - IN1 - Left FWD PWM
+GPIO15 - IN3 - Right FWD PWM
 GPIO13 - IN2 - Left REV
-GPIO15 - IN3 - Right FWD
 GPIO14 - IN4 - Right REV
+
+Updates since 2.2
+- Uses 2 less PWM channels, freeing up channels for servos and such.
+- Replaced hard coded PWM / GPIO numbers with named variables for easy redefinitions.
+
+ToDo: Make a centralized function for motor control. Will probably never happen.
+
+Note about WROVER Boards:
+You will need to change pin definitions for the camera to function.
+This also requires moving LED indicator to GPIO2 instead of GPIO4 or else crash :(
+There are probably more sane pinouts for the WROVER as well such as 
+setting motor driver pins to use GPIO pairs 12,14 for forward and 32,33 for reverse.
+Search code comments for "WROVER"
+
 */
 
 // Define Network SSID & Password
@@ -17,7 +36,7 @@ const char* hostname = "Scout32"; //For access via Hostname
 const char* password = ""; //Password. Leave blank for open network.
 
 //AP Settings
-int channel = 1; // Channel for AP Mode
+int channel = 11; // Channel for AP Mode
 int hidden = 0; // Probably leave at zero
 int maxconnection = 1; // Only allow one at a time
 
@@ -29,7 +48,9 @@ int maxconnection = 1; // Only allow one at a time
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
-// Camera Pin Definitions - Don't heckin' touch.
+// Camera Pin Definitions - Define to suit your board
+
+// ESP32-CAM (Standard)
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
@@ -47,26 +68,55 @@ int maxconnection = 1; // Only allow one at a time
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+/*
+// ESP32-WROVER
+#define PWDN_GPIO_NUM -1
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 21
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 19
+#define Y4_GPIO_NUM 18
+#define Y3_GPIO_NUM 5
+#define Y2_GPIO_NUM 4
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
+*/
+
 // Webserver / Controls Function
 void startCameraServer();
 
-//Define Servos
-const int ServoPinLF = 12; // Left Front Motor Driver
-const int ServoPinLR = 13; // Left Rear Motor Driver
-const int ServoPinRF = 15; // Right Front Motor Driver
-const int ServoPinRR = 14; // Right Rear Motor Driver
-void initServo() // Here we setup PWM, and attach it to physical pins.
-{
-  ledcSetup(3, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  ledcSetup(4, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  ledcSetup(5, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  ledcSetup(2, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  
-  ledcAttachPin(ServoPinLF, 3); // Attach PWM 3 to GPIO 12
-  ledcAttachPin(ServoPinLR, 4); // Attach PWM 4 to GPIO 13
-  ledcAttachPin(ServoPinRR, 5); // Attach PWM 5 to GPIO 15
-  ledcAttachPin(ServoPinRF, 2); // Attach PWM 2 to GPIO 14
+//Define Motor Driver GPIO Pins
+//These definitions work on WROVER as-is
+//WROVER GPIO 12,14 for forward and 32,33 for reverse may look neater
+extern const int MotorLeftForward = 12; // LF GPIO Pin
+extern const int MotorRightForward = 15; // RF GPIO Pin
+extern const int MotorLeftReverse = 13; // LR GPIO Pin
+extern const int MotorRightReverse = 14; // RR GPIO Pin
 
+//Define LED GPIO Pin
+extern const int LEDPIN = 4; // ESP32-CAM Integrated LED on GPIO4 - WROVER change to GPIO2
+
+//PWM Channels
+extern const int MotorLeftPWM = 2; // Left Motor PWM Channel
+extern const int MotorRightPWM = 3; // Right Motor PWM Channel
+extern const int LEDPWM = 4; // LED PWM Channel
+
+void initMotor() // Here we setup PWM, and attach it to physical pins.
+{
+  ledcSetup(MotorLeftPWM, 8000, 16); // 8000 hz PWM, 16-bit resolution.
+  ledcSetup(MotorRightPWM, 8000, 16); // 8000 hz PWM, 16-bit resolution.
+  ledcSetup(LEDPWM, 5000, 8); // 5000 hz PWM, 8-bit resolution.
+  ledcAttachPin(MotorLeftForward, MotorLeftPWM);
+  ledcAttachPin(MotorRightForward, MotorRightPWM);
+  ledcAttachPin(LEDPIN, LEDPWM);
+  pinMode(MotorLeftReverse, OUTPUT);
+  pinMode(MotorRightReverse, OUTPUT);
 }
 
 void setup() 
@@ -127,10 +177,8 @@ void setup()
   s->set_gainceiling(s, (gainceiling_t)2);  // 0 to 6
 
   
-  // Initialize Servos & LEDs
-  initServo();
-  ledcSetup(7, 5000, 8);
-  ledcAttachPin(4, 7);  //GPIO 4 is LED
+  // Initialize Motor and LED Drivers
+  initMotor();
   
  if(!ap){
   // Connect to Router
@@ -163,19 +211,18 @@ void setup()
   //Flash LED as ready indicator
   for (int i=0;i<5;i++) 
     {
-      ledcWrite(7,0);  // flash led
+      ledcWrite(LEDPWM,0);  // flash led
       delay(200);
-      ledcWrite(7,10);
+      ledcWrite(LEDPWM,10);
       delay(200);    
     }       
-  
+
   //Start Webserver
   startCameraServer();
 
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  //delay(1000);
+  // Uncomment below for WiFi Signal Strength via Serial
   // Serial.printf("RSSi: %ld dBm\n",WiFi.RSSI()); 
 }

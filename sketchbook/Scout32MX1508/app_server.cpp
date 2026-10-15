@@ -1,3 +1,12 @@
+// Import Motor Definitions from ino
+extern const int MotorLeftForward; // LF GPIO Pin
+extern const int MotorRightForward; // RF GPIO Pin
+extern const int MotorLeftReverse; // LR GPIO Pin
+extern const int MotorRightReverse; // RR GPIO Pin
+extern const int MotorLeftPWM; // Left Motor PWM Channel
+extern const int MotorRightPWM; // Right Motor PWM Channel
+extern const int LEDPWM; // LED Output Channel
+
 // Define PWM Values - You shouldn't need to touch this.
 int endpoint = 8000;
 int speed = 8 * endpoint;
@@ -218,7 +227,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     //Remote Control
     else if(!strcmp(variable, "flash")) 
     {
-      ledcWrite(7,val);
+      ledcWrite(LEDPWM,val);
     }
     else if(!strcmp(variable, "speed")) 
     {
@@ -235,39 +244,39 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     else if(!strcmp(variable, "car")) {
       if (val==1) {
         Serial.println("Forward");
-        actstate = fwd; // Set state to modify left & right behavior while moving.   
-        ledcWrite(3,(constrain((speed+trim),0,65536)));  
-        ledcWrite(4,0);
-        ledcWrite(5,(constrain((speed-trim),0,65536)));
-        ledcWrite(2,0);
+        actstate = fwd; // Set state to modify left & right behavior while moving.
+        ledcWrite(MotorLeftPWM,(constrain((speed+trim),0,65536)));
+        ledcWrite(MotorRightPWM,(constrain((speed-trim),0,65536)));
+        digitalWrite(MotorLeftReverse,0);
+        digitalWrite(MotorRightReverse,0); 
       }
       else if (val==2) {
         Serial.println("Backward");
         actstate = rev; // Set state to modify left & right behavior while moving.      
-        ledcWrite(3,0);
-        ledcWrite(4,(constrain((speed+trim),0,65536)));
-        ledcWrite(5,0);
-        ledcWrite(2,(constrain((speed-trim),0,65536)));
+        ledcWrite(MotorLeftPWM,(65536-(constrain((speed+trim),0,65536))));
+        ledcWrite(MotorRightPWM,(65536-(constrain((speed-trim),0,65536))));
+        digitalWrite(MotorLeftReverse,1);
+        digitalWrite(MotorRightReverse,1);
       }
       else if (val==3) {
         Serial.println("TurnLeft");
-        if      (actstate == fwd) { ledcWrite(3,(speed*.33));ledcWrite(4,0);ledcWrite(5,speed);ledcWrite(2,0); }
-        else if (actstate == rev) { ledcWrite(3,0);ledcWrite(4,(speed*.33));ledcWrite(5,0);ledcWrite(2,speed); }
-        else { ledcWrite(3,0);ledcWrite(4,(speed*.75));ledcWrite(5,(speed*.75));ledcWrite(2,0); }          
+        if      (actstate == fwd) { ledcWrite(MotorLeftPWM,(speed*.33));ledcWrite(MotorRightPWM,speed);digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
+        else if (actstate == rev) { ledcWrite(MotorLeftPWM,(65536-(speed*.33)));ledcWrite(MotorRightPWM,(65536-speed));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
+        else { ledcWrite(MotorLeftPWM,(65536-(speed*.75)));ledcWrite(MotorRightPWM,(speed*.75));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,0);}          
       }
       else if (val==4) {
         Serial.println("TurnRight");
-        if      (actstate == fwd) { ledcWrite(3,speed);ledcWrite(4,0);ledcWrite(5,(speed*.33));ledcWrite(2,0); }
-        else if (actstate == rev) { ledcWrite(3,0);ledcWrite(4,speed);ledcWrite(5,0);ledcWrite(2,(speed*.33)); }
-        else { ledcWrite(3,(speed*.75));ledcWrite(4,0);ledcWrite(5,0);ledcWrite(2,(speed*.75)); }       
+        if      (actstate == fwd) { ledcWrite(MotorLeftPWM,speed);ledcWrite(MotorRightPWM,(speed*.33));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
+        else if (actstate == rev) { ledcWrite(MotorLeftPWM,(65536-speed));ledcWrite(MotorRightPWM,(65536-(speed*.33)));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
+        else { ledcWrite(MotorLeftPWM,(speed*.75));ledcWrite(MotorRightPWM,(65536-(speed*.75)));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,1);}       
       }
       else {
         Serial.println("Stop");
         actstate = stp;
-        ledcWrite(3,0);
-        ledcWrite(4,0);
-        ledcWrite(5,0);
-        ledcWrite(2,0);      
+        ledcWrite(MotorLeftPWM,0);
+        ledcWrite(MotorRightPWM,0);
+        digitalWrite(MotorLeftReverse,0);
+        digitalWrite(MotorRightReverse,0); 
       } 
     }        
     else 
@@ -471,10 +480,10 @@ void startCameraServer()
       if ((heartbeat+4000) < millis() ) { // Check if command signal has been sent within the last 4 seconds.
         Serial.printf("Stopping. Disconnected for: '%d'ms\n", millis() - heartbeat); // Notify and stop motors if no signal.
         actstate = stp;
-        ledcWrite(3,0);
-        ledcWrite(4,0);
-        ledcWrite(5,0);
-        ledcWrite(2,0);
+        ledcWrite(MotorLeftPWM,0);
+        ledcWrite(MotorRightPWM,0);
+        digitalWrite(MotorLeftReverse,0);
+        digitalWrite(MotorRightReverse,0); 
       }
     }
 }
