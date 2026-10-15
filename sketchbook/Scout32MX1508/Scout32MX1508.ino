@@ -1,6 +1,6 @@
    /*
 Pilot Hobbies Scout32 - For ESP32
-Version 2.3 - Should compile with ESP32 Boards Library 1.0.6+
+Version 2.x (TBD) - Requires ESP32 Arduino core 3.x (tested with 3.3.12)
 
 I recommend this new motor driver variation over the older ESC / Modified Servo code.
 The motor driver approach is cheaper and less prone to drift and calibration errors.
@@ -15,6 +15,12 @@ GPIO14 - IN4 - Right REV
 Updates since 2.2
 - Uses 2 less PWM channels, freeing up channels for servos and such.
 - Replaced hard coded PWM / GPIO numbers with named variables for easy redefinitions.
+
+Updates since 2.3
+- Ported to ESP32 Arduino core 3.x (no longer compiles with 1.0.6).
+- New LEDC API: ledcAttachChannel() / ledcWrite() by pin.
+- Motor PWM at 1000 Hz (16-bit cannot do 8000 Hz; 1.0.6 silently ran at ~1220 Hz).
+- Camera config zero-initialised, uses grab_mode / fb_location, dropped dl_lib dependency.
 
 ToDo: Make a centralized function for motor control. Will probably never happen.
 
@@ -40,8 +46,7 @@ int channel = 11; // Channel for AP Mode
 int hidden = 0; // Probably leave at zero
 int maxconnection = 1; // Only allow one at a time
 
-// Libraries. If you get errors compiling, please downgrade ESP32 by Espressif.
-// Use version 1.0.6 (Tools, Manage Libraries).
+// Libraries. Requires ESP32 by Espressif core 3.x.
 #include <WiFi.h>
 #include "esp_wifi.h"
 #include "esp_camera.h"
@@ -103,18 +108,21 @@ extern const int MotorRightReverse = 14; // RR GPIO Pin
 extern const int LEDPIN = 4; // ESP32-CAM Integrated LED on GPIO4 - WROVER change to GPIO2
 
 //PWM Channels
-extern const int MotorLeftPWM = 2; // Left Motor PWM Channel
-extern const int MotorRightPWM = 3; // Right Motor PWM Channel
-extern const int LEDPWM = 4; // LED PWM Channel
+//Explicit channels so we never collide with the camera XCLK (LEDC_CHANNEL_0 / LEDC_TIMER_0)
+const int MotorLeftPWM = 2; // Left Motor PWM Channel
+const int MotorRightPWM = 3; // Right Motor PWM Channel
+const int LEDPWM = 4; // LED PWM Channel
+
+//Motor PWM frequency. 16-bit resolution caps this at ~1220 Hz (80 MHz / 2^16),
+//which is what the old 1.0.6 core silently ran at when asked for 8000 Hz.
+const int MotorPWMFreq = 1000;
 
 void initMotor() // Here we setup PWM, and attach it to physical pins.
 {
-  ledcSetup(MotorLeftPWM, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  ledcSetup(MotorRightPWM, 8000, 16); // 8000 hz PWM, 16-bit resolution.
-  ledcSetup(LEDPWM, 5000, 8); // 5000 hz PWM, 8-bit resolution.
-  ledcAttachPin(MotorLeftForward, MotorLeftPWM);
-  ledcAttachPin(MotorRightForward, MotorRightPWM);
-  ledcAttachPin(LEDPIN, LEDPWM);
+  // Core 3.x: ledcWrite() now takes the GPIO pin instead of the channel.
+  ledcAttachChannel(MotorLeftForward, MotorPWMFreq, 16, MotorLeftPWM); // 16-bit resolution.
+  ledcAttachChannel(MotorRightForward, MotorPWMFreq, 16, MotorRightPWM); // 16-bit resolution.
+  ledcAttachChannel(LEDPIN, 5000, 8, LEDPWM); // 5000 hz PWM, 8-bit resolution.
   pinMode(MotorLeftReverse, OUTPUT);
   pinMode(MotorRightReverse, OUTPUT);
 }
@@ -129,7 +137,7 @@ void setup()
 
 
 // Camera Configuration - Again, don't touch.
-  camera_config_t config;
+  camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
   config.pin_d0 = Y2_GPIO_NUM;
@@ -144,21 +152,25 @@ void setup()
   config.pin_pclk = PCLK_GPIO_NUM;
   config.pin_vsync = VSYNC_GPIO_NUM;
   config.pin_href = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST; // Always stream the freshest frame (lower latency)
   //init with high specs to pre-allocate larger buffers
   if(psramFound()){
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 10;
     config.fb_count = 2;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
     config.frame_size = FRAMESIZE_QVGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   }
   // camera init
   esp_err_t err = esp_camera_init(&config);
@@ -211,9 +223,9 @@ void setup()
   //Flash LED as ready indicator
   for (int i=0;i<5;i++) 
     {
-      ledcWrite(LEDPWM,0);  // flash led
+      ledcWrite(LEDPIN,0);  // flash led
       delay(200);
-      ledcWrite(LEDPWM,10);
+      ledcWrite(LEDPIN,10);
       delay(200);    
     }       
 

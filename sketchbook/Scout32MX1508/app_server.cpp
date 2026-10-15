@@ -3,9 +3,7 @@ extern const int MotorLeftForward; // LF GPIO Pin
 extern const int MotorRightForward; // RF GPIO Pin
 extern const int MotorLeftReverse; // LR GPIO Pin
 extern const int MotorRightReverse; // RR GPIO Pin
-extern const int MotorLeftPWM; // Left Motor PWM Channel
-extern const int MotorRightPWM; // Right Motor PWM Channel
-extern const int LEDPWM; // LED Output Channel
+extern const int LEDPIN; // LED GPIO Pin
 
 // Define PWM Values - You shouldn't need to touch this.
 int endpoint = 8000;
@@ -13,15 +11,13 @@ int speed = 8 * endpoint;
 int trim = 0;
 int heartbeat = 0;
 
-// Libraries. Updated for Version 1.0.6
+// Libraries. Updated for ESP32 Arduino core 3.x
 #include <esp32-hal-ledc.h> 
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "Arduino.h"
-//#include "dl_lib.h"  //1.0.2
-#include "dl_lib_matrix3d.h" //1.0.6
 
 // Stream Encoding
 typedef struct {
@@ -61,53 +57,17 @@ static esp_err_t capture_handler(httpd_req_t *req){
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
 
-    size_t out_len, out_width, out_height;
-    uint8_t * out_buf;
-    bool s;
-    {
-        size_t fb_len = 0;
-        if(fb->format == PIXFORMAT_JPEG){
-            fb_len = fb->len;
-            res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
-        } else {
-            jpg_chunking_t jchunk = {req, 0};
-            res = frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk)?ESP_OK:ESP_FAIL;
-            httpd_resp_send_chunk(req, NULL, 0);
-            fb_len = jchunk.len;
-        }
-        esp_camera_fb_return(fb);
-        return res;
+    size_t fb_len = 0;
+    if(fb->format == PIXFORMAT_JPEG){
+        fb_len = fb->len;
+        res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+    } else {
+        jpg_chunking_t jchunk = {req, 0};
+        res = frame2jpg_cb(fb, 80, jpg_encode_stream, &jchunk)?ESP_OK:ESP_FAIL;
+        httpd_resp_send_chunk(req, NULL, 0);
+        fb_len = jchunk.len;
     }
-
-    dl_matrix3du_t *image_matrix = dl_matrix3du_alloc(1, fb->width, fb->height, 3);
-    if (!image_matrix) {
-        esp_camera_fb_return(fb);
-        Serial.println("dl_matrix3du_alloc failed");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    out_buf = image_matrix->item;
-    out_len = fb->width * fb->height * 3;
-    out_width = fb->width;
-    out_height = fb->height;
-
-    s = fmt2rgb888(fb->buf, fb->len, fb->format, out_buf);
     esp_camera_fb_return(fb);
-    if(!s){
-        dl_matrix3du_free(image_matrix);
-        Serial.println("to rgb888 failed");
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-
-    jpg_chunking_t jchunk = {req, 0};
-    s = fmt2jpg_cb(out_buf, out_len, out_width, out_height, PIXFORMAT_RGB888, 90, jpg_encode_stream, &jchunk);
-    dl_matrix3du_free(image_matrix);
-    if(!s){
-        Serial.println("JPEG compression failed");
-        return ESP_FAIL;
-    }
     return res;
 }
 
@@ -117,7 +77,6 @@ static esp_err_t stream_handler(httpd_req_t *req){
     size_t _jpg_buf_len = 0;
     uint8_t * _jpg_buf = NULL;
     char * part_buf[64];
-    dl_matrix3du_t *image_matrix = NULL;
 
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
     if(res != ESP_OK){
@@ -227,7 +186,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     //Remote Control
     else if(!strcmp(variable, "flash")) 
     {
-      ledcWrite(LEDPWM,val);
+      ledcWrite(LEDPIN,val);
     }
     else if(!strcmp(variable, "speed")) 
     {
@@ -245,36 +204,36 @@ static esp_err_t cmd_handler(httpd_req_t *req)
       if (val==1) {
         Serial.println("Forward");
         actstate = fwd; // Set state to modify left & right behavior while moving.
-        ledcWrite(MotorLeftPWM,(constrain((speed+trim),0,65536)));
-        ledcWrite(MotorRightPWM,(constrain((speed-trim),0,65536)));
+        ledcWrite(MotorLeftForward,(constrain((speed+trim),0,65536)));
+        ledcWrite(MotorRightForward,(constrain((speed-trim),0,65536)));
         digitalWrite(MotorLeftReverse,0);
         digitalWrite(MotorRightReverse,0); 
       }
       else if (val==2) {
         Serial.println("Backward");
         actstate = rev; // Set state to modify left & right behavior while moving.      
-        ledcWrite(MotorLeftPWM,(65536-(constrain((speed+trim),0,65536))));
-        ledcWrite(MotorRightPWM,(65536-(constrain((speed-trim),0,65536))));
+        ledcWrite(MotorLeftForward,(65536-(constrain((speed+trim),0,65536))));
+        ledcWrite(MotorRightForward,(65536-(constrain((speed-trim),0,65536))));
         digitalWrite(MotorLeftReverse,1);
         digitalWrite(MotorRightReverse,1);
       }
       else if (val==3) {
         Serial.println("TurnLeft");
-        if      (actstate == fwd) { ledcWrite(MotorLeftPWM,(speed*.33));ledcWrite(MotorRightPWM,speed);digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
-        else if (actstate == rev) { ledcWrite(MotorLeftPWM,(65536-(speed*.33)));ledcWrite(MotorRightPWM,(65536-speed));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
-        else { ledcWrite(MotorLeftPWM,(65536-(speed*.75)));ledcWrite(MotorRightPWM,(speed*.75));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,0);}          
+        if      (actstate == fwd) { ledcWrite(MotorLeftForward,(speed*.33));ledcWrite(MotorRightForward,speed);digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
+        else if (actstate == rev) { ledcWrite(MotorLeftForward,(65536-(speed*.33)));ledcWrite(MotorRightForward,(65536-speed));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
+        else { ledcWrite(MotorLeftForward,(65536-(speed*.75)));ledcWrite(MotorRightForward,(speed*.75));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,0);}          
       }
       else if (val==4) {
         Serial.println("TurnRight");
-        if      (actstate == fwd) { ledcWrite(MotorLeftPWM,speed);ledcWrite(MotorRightPWM,(speed*.33));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
-        else if (actstate == rev) { ledcWrite(MotorLeftPWM,(65536-speed));ledcWrite(MotorRightPWM,(65536-(speed*.33)));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
-        else { ledcWrite(MotorLeftPWM,(speed*.75));ledcWrite(MotorRightPWM,(65536-(speed*.75)));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,1);}       
+        if      (actstate == fwd) { ledcWrite(MotorLeftForward,speed);ledcWrite(MotorRightForward,(speed*.33));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,0);}
+        else if (actstate == rev) { ledcWrite(MotorLeftForward,(65536-speed));ledcWrite(MotorRightForward,(65536-(speed*.33)));digitalWrite(MotorLeftReverse,1);digitalWrite(MotorRightReverse,1);}
+        else { ledcWrite(MotorLeftForward,(speed*.75));ledcWrite(MotorRightForward,(65536-(speed*.75)));digitalWrite(MotorLeftReverse,0);digitalWrite(MotorRightReverse,1);}       
       }
       else {
         Serial.println("Stop");
         actstate = stp;
-        ledcWrite(MotorLeftPWM,0);
-        ledcWrite(MotorRightPWM,0);
+        ledcWrite(MotorLeftForward,0);
+        ledcWrite(MotorRightForward,0);
         digitalWrite(MotorLeftReverse,0);
         digitalWrite(MotorRightReverse,0); 
       } 
@@ -480,8 +439,8 @@ void startCameraServer()
       if ((heartbeat+4000) < millis() ) { // Check if command signal has been sent within the last 4 seconds.
         Serial.printf("Stopping. Disconnected for: '%d'ms\n", millis() - heartbeat); // Notify and stop motors if no signal.
         actstate = stp;
-        ledcWrite(MotorLeftPWM,0);
-        ledcWrite(MotorRightPWM,0);
+        ledcWrite(MotorLeftForward,0);
+        ledcWrite(MotorRightForward,0);
         digitalWrite(MotorLeftReverse,0);
         digitalWrite(MotorRightReverse,0); 
       }
